@@ -108,13 +108,45 @@ if files:
 
     bloques = df.groupby(["vehiculo", "grupo"]).agg({
         "estado": "first",
-        "fecha_hora": ["min", "max"],
-        "delta_horas": "sum"
+        "fecha_hora": ["min", "max"]
     })
 
-    bloques.columns = ["estado", "inicio", "fin", "duracion_horas"]
+    bloques.columns = ["estado", "inicio", "fin"]
     bloques = bloques.reset_index()
 
+    # ==============================
+    # 🔥 CORTE DE BLOQUES POR DÍA
+    # ==============================
+
+    filas = []
+
+    for _, row in bloques.iterrows():
+
+        inicio = row["inicio"]
+        fin = row["fin"]
+
+        actual = inicio
+
+        while actual.date() <= fin.date():
+
+            fin_dia = pd.Timestamp.combine(actual.date(), pd.Timestamp.max.time())
+
+            corte_fin = min(fin, fin_dia)
+
+            horas = (corte_fin - actual).total_seconds() / 3600
+
+            filas.append({
+                "vehiculo": row["vehiculo"],
+                "estado": row["estado"],
+                "fecha": actual.date(),
+                "duracion_horas": horas
+            })
+
+            actual = corte_fin + pd.Timedelta(seconds=1)
+
+    bloques_dia = pd.DataFrame(filas)
+
+    # Clasificar descanso
     def clasificar_descanso(row):
         if row["estado"] == "apagado" and row["duracion_horas"] >= HORAS_DESCANSO_LARGO:
             return "descanso_largo"
@@ -123,10 +155,10 @@ if files:
         else:
             return "operacion"
 
-    bloques["tipo"] = bloques.apply(clasificar_descanso, axis=1)
+    bloques_dia["tipo"] = bloques_dia.apply(clasificar_descanso, axis=1)
 
     # ==============================
-    # KPIs COMPLETOS
+    # KPIs
     # ==============================
 
     kpis_list = []
@@ -144,13 +176,13 @@ if files:
 
         numero_paradas = grupo["fin_conduccion"].sum()
 
-        bloques_dia = bloques[
-            (bloques["vehiculo"] == vehiculo) &
-            (bloques["inicio"].dt.date == fecha)
+        bloques_filtrados = bloques_dia[
+            (bloques_dia["vehiculo"] == vehiculo) &
+            (bloques_dia["fecha"] == fecha)
         ]
 
-        horas_descanso = bloques_dia.loc[bloques_dia["tipo"] == "descanso_largo", "duracion_horas"].sum()
-        horas_pausa = bloques_dia.loc[bloques_dia["tipo"] == "pausa", "duracion_horas"].sum()
+        horas_descanso = bloques_filtrados.loc[bloques_filtrados["tipo"] == "descanso_largo", "duracion_horas"].sum()
+        horas_pausa = bloques_filtrados.loc[bloques_filtrados["tipo"] == "pausa", "duracion_horas"].sum()
 
         horas_extra = max(0, horas_trabajo - HORAS_MAX_JORNADA)
 
@@ -207,27 +239,14 @@ if files:
 
                 ws.column_dimensions[chr(65 + i)].width = max_len + 2
 
-            # BLOQUES
-            bloques_cond = bloques[
-                bloques["vehiculo"].isin(df_conductor["vehiculo"])
-            ].copy()
+            # BLOQUES POR DÍA
+            bloques_cond = bloques_dia[
+                bloques_dia["vehiculo"].isin(df_conductor["vehiculo"])
+            ]
 
             nombre_bloques = limpiar_nombre(f"Bloques {conductor}")
 
             bloques_cond.to_excel(writer, sheet_name=nombre_bloques, index=False)
-
-            ws2 = writer.sheets[nombre_bloques]
-
-            for i, col in enumerate(bloques_cond.columns):
-                try:
-                    max_len = max(
-                        bloques_cond[col].astype(str).apply(len).max(),
-                        len(col)
-                    )
-                except:
-                    max_len = len(col)
-
-                ws2.column_dimensions[chr(65 + i)].width = max_len + 2
 
     st.download_button(
         label="📥 Descargar reporte por conductor",
@@ -235,17 +254,3 @@ if files:
         file_name="reporte_jornada_conductores.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-
-    # ==============================
-    # ALERTAS
-    # ==============================
-
-    st.subheader("🚨 Alertas")
-
-    alertas = kpis[kpis["horas_trabajo"] > HORAS_MAX_JORNADA]
-
-    if len(alertas) > 0:
-        st.warning("Existen conductores con exceso de jornada")
-        st.dataframe(alertas)
-    else:
-        st.success("Todos los conductores cumplen la jornada")
