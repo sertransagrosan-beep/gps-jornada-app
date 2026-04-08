@@ -195,8 +195,16 @@ if files:
             df_conductor.to_excel(writer, sheet_name=nombre_hoja, index=False)
 
             ws = writer.sheets[nombre_hoja]
+
             for i, col in enumerate(df_conductor.columns):
-                max_len = max(df_conductor[col].astype(str).map(len).max(), len(col))
+                try:
+                    max_len = max(
+                        df_conductor[col].astype(str).apply(len).max(),
+                        len(col)
+                    )
+                except:
+                    max_len = len(col)
+
                 ws.column_dimensions[chr(65 + i)].width = max_len + 2
 
             # BLOQUES
@@ -209,8 +217,16 @@ if files:
             bloques_cond.to_excel(writer, sheet_name=nombre_bloques, index=False)
 
             ws2 = writer.sheets[nombre_bloques]
+
             for i, col in enumerate(bloques_cond.columns):
-                max_len = max(bloques_cond[col].astype(str).map(len).max(), len(col))
+                try:
+                    max_len = max(
+                        bloques_cond[col].astype(str).apply(len).max(),
+                        len(col)
+                    )
+                except:
+                    max_len = len(col)
+
                 ws2.column_dimensions[chr(65 + i)].width = max_len + 2
 
     st.download_button(
