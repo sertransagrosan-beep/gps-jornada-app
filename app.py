@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import io
+import re
 
 st.title("🚛 Análisis de Jornada de Conductores")
 
@@ -8,8 +9,8 @@ st.title("🚛 Análisis de Jornada de Conductores")
 # CONFIGURACIÓN
 # ==============================
 
-HORAS_MAX_JORNADA = st.number_input("Horas máximas jornada", value=8)
-HORAS_DESCANSO_LARGO = st.number_input("Horas descanso largo", value=4)
+HORAS_MAX_JORNADA = st.number_input("Horas máximas jornada", value=8.0)
+HORAS_DESCANSO_LARGO = st.number_input("Horas descanso largo", value=4.0)
 HORAS_MIN_PAUSA = st.number_input("Horas mínima pausa", value=0.5)
 
 # ==============================
@@ -125,16 +126,23 @@ if files:
     bloques["tipo"] = bloques.apply(clasificar_descanso, axis=1)
 
     # ==============================
-    # KPIs
+    # KPIs COMPLETOS
     # ==============================
 
     kpis_list = []
 
     for (vehiculo, fecha), grupo in df.groupby(["vehiculo", "fecha"]):
 
+        conductor = grupo["conductor"].dropna().iloc[0] if "conductor" in grupo else "N/A"
+
+        inicio_jornada = grupo.loc[grupo["ignicion_on"], "fecha_hora"].min()
+        fin_jornada = grupo.loc[grupo["ignicion_on"], "fecha_hora"].max()
+
         horas_conduccion = grupo.loc[grupo["estado"] == "conduciendo", "delta_horas"].sum()
         horas_ralenti = grupo.loc[grupo["estado"] == "ralenti", "delta_horas"].sum()
         horas_trabajo = horas_conduccion + horas_ralenti
+
+        numero_paradas = grupo["fin_conduccion"].sum()
 
         bloques_dia = bloques[
             (bloques["vehiculo"] == vehiculo) &
@@ -147,36 +155,81 @@ if files:
         horas_extra = max(0, horas_trabajo - HORAS_MAX_JORNADA)
 
         kpis_list.append({
+            "conductor": conductor,
             "vehiculo": vehiculo,
             "fecha": fecha,
+            "inicio_jornada": inicio_jornada,
+            "fin_jornada": fin_jornada,
+            "numero_paradas": numero_paradas,
             "horas_trabajo": horas_trabajo,
             "horas_conduccion": horas_conduccion,
             "horas_ralenti": horas_ralenti,
             "horas_descanso": horas_descanso,
             "horas_pausa": horas_pausa,
-            "horas_extra": horas_extra,
-            "cumple_jornada": horas_trabajo <= HORAS_MAX_JORNADA,
-            "cumple_descanso": horas_descanso >= HORAS_DESCANSO_LARGO
+            "horas_extra": horas_extra
         })
 
-    kpis = pd.DataFrame(kpis_list).round(3)
+    kpis = pd.DataFrame(kpis_list).round(2)
+    kpis = kpis.sort_values(by=["conductor", "fecha"])
 
-    st.success("✅ Procesamiento completado")
-
+    st.subheader("📊 Resumen por conductor")
     st.dataframe(kpis)
 
     # ==============================
-    # DESCARGA EXCEL
+    # EXPORTAR EXCEL
     # ==============================
+
+    def limpiar_nombre(nombre):
+        if pd.isna(nombre):
+            return "SinNombre"
+        return re.sub(r'[\\/*?:\\[\\]]', "", str(nombre))[:31]
 
     buffer = io.BytesIO()
 
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        kpis.to_excel(writer, index=False, sheet_name="KPIs")
+
+        for conductor, df_conductor in kpis.groupby("conductor"):
+
+            nombre_hoja = limpiar_nombre(conductor)
+
+            df_conductor.to_excel(writer, sheet_name=nombre_hoja, index=False)
+
+            ws = writer.sheets[nombre_hoja]
+            for i, col in enumerate(df_conductor.columns):
+                max_len = max(df_conductor[col].astype(str).map(len).max(), len(col))
+                ws.column_dimensions[chr(65 + i)].width = max_len + 2
+
+            # BLOQUES
+            bloques_cond = bloques[
+                bloques["vehiculo"].isin(df_conductor["vehiculo"])
+            ].copy()
+
+            nombre_bloques = limpiar_nombre(f"Bloques {conductor}")
+
+            bloques_cond.to_excel(writer, sheet_name=nombre_bloques, index=False)
+
+            ws2 = writer.sheets[nombre_bloques]
+            for i, col in enumerate(bloques_cond.columns):
+                max_len = max(bloques_cond[col].astype(str).map(len).max(), len(col))
+                ws2.column_dimensions[chr(65 + i)].width = max_len + 2
 
     st.download_button(
-        label="📥 Descargar Excel",
+        label="📥 Descargar reporte por conductor",
         data=buffer,
-        file_name="reporte_jornada.xlsx",
+        file_name="reporte_jornada_conductores.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
+    # ==============================
+    # ALERTAS
+    # ==============================
+
+    st.subheader("🚨 Alertas")
+
+    alertas = kpis[kpis["horas_trabajo"] > HORAS_MAX_JORNADA]
+
+    if len(alertas) > 0:
+        st.warning("Existen conductores con exceso de jornada")
+        st.dataframe(alertas)
+    else:
+        st.success("Todos los conductores cumplen la jornada")
