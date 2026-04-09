@@ -15,7 +15,6 @@ HORAS_DESCANSO_LARGO = st.number_input("Horas descanso largo", value=4.0, step=0
 MIN_PAUSA = st.number_input("Pausa mínima (minutos)", value=34, step=1)
 MIN_PARADA = st.number_input("Duración mínima parada (minutos)", value=17, step=1)
 
-# Convertir a horas
 HORAS_MIN_PAUSA = MIN_PAUSA / 60
 UMBRAL_PARADA_MIN = MIN_PARADA / 60
 
@@ -42,7 +41,6 @@ if files:
             "Localización": "ubicacion"
         })
 
-        # SOLO PLACA
         df_temp["vehiculo"] = file.name[:6].upper()
 
         lista_df.append(df_temp)
@@ -98,19 +96,37 @@ if files:
     df["delta_horas"] = df["delta_horas"].fillna(0)
 
     # ==============================
-    # BLOQUES
+    # BLOQUES (CON UBICACIÓN)
     # ==============================
 
     df["grupo"] = (df["estado"] != df["estado"].shift()).cumsum()
 
-    bloques = df.groupby(["vehiculo", "grupo"]).agg({
-        "estado": "first",
-        "fecha_hora": ["min", "max"],
-        "delta_horas": "sum"
-    })
+    bloques_list = []
 
-    bloques.columns = ["estado", "inicio", "fin", "duracion_horas"]
-    bloques = bloques.reset_index()
+    for (vehiculo, grupo), g in df.groupby(["vehiculo", "grupo"]):
+
+        g = g.sort_values("fecha_hora")
+
+        estado = g["estado"].iloc[0]
+        inicio = g["fecha_hora"].iloc[0]
+        fin = g["fecha_hora"].iloc[-1]
+        duracion = g["delta_horas"].sum()
+
+        ubic_inicio = g["ubicacion"].iloc[0] if "ubicacion" in g else ""
+        ubic_fin = g["ubicacion"].iloc[-1] if "ubicacion" in g else ""
+
+        bloques_list.append({
+            "vehiculo": vehiculo,
+            "grupo": grupo,
+            "estado": estado,
+            "inicio": inicio,
+            "fin": fin,
+            "duracion_horas": duracion,
+            "ubic_inicio": ubic_inicio,
+            "ubic_fin": ubic_fin
+        })
+
+    bloques = pd.DataFrame(bloques_list)
 
     # ==============================
     # KPIs
@@ -129,14 +145,9 @@ if files:
         horas_ralenti = grupo.loc[grupo["estado"] == "ralenti", "delta_horas"].sum()
         horas_trabajo = horas_conduccion + horas_ralenti
 
-        # ==============================
-        # UBICACIONES
-        # ==============================
-
+        # UBICACIONES KPI
         ubic_inicio = grupo.loc[grupo["fecha_hora"] == inicio_jornada, "ubicacion"].iloc[0] if pd.notna(inicio_jornada) else ""
         ubic_fin = grupo.loc[grupo["fecha_hora"] == fin_jornada, "ubicacion"].iloc[0] if pd.notna(fin_jornada) else ""
-
-        # ubicación más frecuente
         ubic_principal = grupo["ubicacion"].mode()
         ubic_principal = ubic_principal.iloc[0] if len(ubic_principal) > 0 else ""
 
@@ -199,7 +210,7 @@ if files:
     kpis = pd.DataFrame(kpis_list).round(2)
     kpis = kpis.sort_values(by=["conductor", "fecha"])
 
-    # FORMATO HORA
+    # FORMATO HORAS
     kpis["inicio_jornada"] = pd.to_datetime(kpis["inicio_jornada"]).dt.strftime("%I:%M %p").str.lstrip("0")
     kpis["fin_jornada"] = pd.to_datetime(kpis["fin_jornada"]).dt.strftime("%I:%M %p").str.lstrip("0")
 
@@ -235,10 +246,7 @@ if files:
 
                 ws.column_dimensions[chr(65 + i)].width = max_len + 2
 
-            # ==============================
-            # HOJA BLOQUES (SE CONSERVA)
-            # ==============================
-
+            # HOJA BLOQUES
             bloques_cond = bloques[
                 bloques["vehiculo"].isin(df_conductor["vehiculo"])
             ].copy()
