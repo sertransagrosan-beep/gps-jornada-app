@@ -108,57 +108,15 @@ if files:
 
     bloques = df.groupby(["vehiculo", "grupo"]).agg({
         "estado": "first",
-        "fecha_hora": ["min", "max"]
+        "fecha_hora": ["min", "max"],
+        "delta_horas": "sum"
     })
 
-    bloques.columns = ["estado", "inicio", "fin"]
+    bloques.columns = ["estado", "inicio", "fin", "duracion_horas"]
     bloques = bloques.reset_index()
 
     # ==============================
-    # 🔥 CORTE DE BLOQUES POR DÍA
-    # ==============================
-
-    filas = []
-
-    for _, row in bloques.iterrows():
-
-        inicio = row["inicio"]
-        fin = row["fin"]
-
-        actual = inicio
-
-        while actual.date() <= fin.date():
-
-            fin_dia = pd.Timestamp.combine(actual.date(), pd.Timestamp.max.time())
-
-            corte_fin = min(fin, fin_dia)
-
-            horas = (corte_fin - actual).total_seconds() / 3600
-
-            filas.append({
-                "vehiculo": row["vehiculo"],
-                "estado": row["estado"],
-                "fecha": actual.date(),
-                "duracion_horas": horas
-            })
-
-            actual = corte_fin + pd.Timedelta(seconds=1)
-
-    bloques_dia = pd.DataFrame(filas)
-
-    # Clasificar descanso
-    def clasificar_descanso(row):
-        if row["estado"] == "apagado" and row["duracion_horas"] >= HORAS_DESCANSO_LARGO:
-            return "descanso_largo"
-        elif row["estado"] == "apagado" and row["duracion_horas"] >= HORAS_MIN_PAUSA:
-            return "pausa"
-        else:
-            return "operacion"
-
-    bloques_dia["tipo"] = bloques_dia.apply(clasificar_descanso, axis=1)
-
-    # ==============================
-    # KPIs
+    # KPIs COMPLETOS (CON CORTE POR DÍA)
     # ==============================
 
     kpis_list = []
@@ -176,13 +134,32 @@ if files:
 
         numero_paradas = grupo["fin_conduccion"].sum()
 
-        bloques_filtrados = bloques_dia[
-            (bloques_dia["vehiculo"] == vehiculo) &
-            (bloques_dia["fecha"] == fecha)
-        ]
+        # 🔥 CORTE REAL POR DÍA (OPTIMIZADO)
+        bloques_vehiculo = bloques[bloques["vehiculo"] == vehiculo]
 
-        horas_descanso = bloques_filtrados.loc[bloques_filtrados["tipo"] == "descanso_largo", "duracion_horas"].sum()
-        horas_pausa = bloques_filtrados.loc[bloques_filtrados["tipo"] == "pausa", "duracion_horas"].sum()
+        horas_descanso = 0
+        horas_pausa = 0
+
+        inicio_dia = pd.Timestamp(fecha)
+        fin_dia = inicio_dia + pd.Timedelta(days=1)
+
+        for _, b in bloques_vehiculo.iterrows():
+
+            inicio_b = b["inicio"]
+            fin_b = b["fin"]
+
+            inicio_real = max(inicio_b, inicio_dia)
+            fin_real = min(fin_b, fin_dia)
+
+            if inicio_real < fin_real:
+
+                horas = (fin_real - inicio_real).total_seconds() / 3600
+
+                if b["estado"] == "apagado":
+                    if horas >= HORAS_DESCANSO_LARGO:
+                        horas_descanso += horas
+                    elif horas >= HORAS_MIN_PAUSA:
+                        horas_pausa += horas
 
         horas_extra = max(0, horas_trabajo - HORAS_MAX_JORNADA)
 
@@ -239,14 +216,27 @@ if files:
 
                 ws.column_dimensions[chr(65 + i)].width = max_len + 2
 
-            # BLOQUES POR DÍA
-            bloques_cond = bloques_dia[
-                bloques_dia["vehiculo"].isin(df_conductor["vehiculo"])
-            ]
+            # BLOQUES
+            bloques_cond = bloques[
+                bloques["vehiculo"].isin(df_conductor["vehiculo"])
+            ].copy()
 
             nombre_bloques = limpiar_nombre(f"Bloques {conductor}")
 
             bloques_cond.to_excel(writer, sheet_name=nombre_bloques, index=False)
+
+            ws2 = writer.sheets[nombre_bloques]
+
+            for i, col in enumerate(bloques_cond.columns):
+                try:
+                    max_len = max(
+                        bloques_cond[col].astype(str).apply(len).max(),
+                        len(col)
+                    )
+                except:
+                    max_len = len(col)
+
+                ws2.column_dimensions[chr(65 + i)].width = max_len + 2
 
     st.download_button(
         label="📥 Descargar reporte por conductor",
