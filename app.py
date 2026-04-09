@@ -6,7 +6,7 @@ import re
 st.title("Jornada Laboral Conductores")
 
 # ==============================
-# CONFIGURACIÓN (EN MINUTOS)
+# CONFIGURACIÓN
 # ==============================
 
 HORAS_MAX_JORNADA = st.number_input("Horas máximas jornada", value=8.0, step=0.1)
@@ -15,7 +15,6 @@ HORAS_DESCANSO_LARGO = st.number_input("Horas descanso largo", value=4.0, step=0
 MIN_PAUSA = st.number_input("Pausa mínima (minutos)", value=34, step=1)
 MIN_PARADA = st.number_input("Duración mínima parada (minutos)", value=17, step=1)
 
-# Convertir a horas
 HORAS_MIN_PAUSA = MIN_PAUSA / 60
 UMBRAL_PARADA_MIN = MIN_PARADA / 60
 
@@ -38,10 +37,10 @@ if files:
             "Fecha y Hora": "fecha_hora",
             "Velocidad": "velocidad",
             "Ignicion*": "ignicion",
-            "Conductor": "conductor"
+            "Conductor": "conductor",
+            "Localización": "ubicacion"
         })
 
-        # ✅ SOLO PLACA (6 caracteres)
         df_temp["vehiculo"] = file.name[:6].upper()
 
         lista_df.append(df_temp)
@@ -121,16 +120,31 @@ if files:
 
         conductor = grupo["conductor"].dropna().iloc[0] if "conductor" in grupo else "N/A"
 
-        inicio_jornada = grupo.loc[grupo["ignicion_on"], "fecha_hora"].min()
-        fin_jornada = grupo.loc[grupo["ignicion_on"], "fecha_hora"].max()
+        # ==============================
+        # UBICACIONES
+        # ==============================
+
+        grupo_on = grupo[grupo["ignicion_on"]]
+
+        ubicacion_inicio = grupo_on.iloc[0]["ubicacion"] if len(grupo_on) > 0 else None
+        ubicacion_fin = grupo_on.iloc[-1]["ubicacion"] if len(grupo_on) > 0 else None
+
+        # UBICACIÓN PRINCIPAL (por tiempo)
+        ubicaciones_tiempo = grupo.groupby("ubicacion")["delta_horas"].sum()
+
+        if len(ubicaciones_tiempo) > 0:
+            ubicacion_principal = ubicaciones_tiempo.idxmax()
+        else:
+            ubicacion_principal = None
+
+        # ==============================
+
+        inicio_jornada = grupo_on["fecha_hora"].min()
+        fin_jornada = grupo_on["fecha_hora"].max()
 
         horas_conduccion = grupo.loc[grupo["estado"] == "conduciendo", "delta_horas"].sum()
         horas_ralenti = grupo.loc[grupo["estado"] == "ralenti", "delta_horas"].sum()
         horas_trabajo = horas_conduccion + horas_ralenti
-
-        # ==============================
-        # PARADAS + DESCANSOS POR DÍA
-        # ==============================
 
         inicio_dia = pd.Timestamp(fecha)
         fin_dia = inicio_dia + pd.Timedelta(days=1)
@@ -155,11 +169,9 @@ if files:
 
                 horas = (fin_real - inicio_real).total_seconds() / 3600
 
-                # PARADAS
                 if b["estado"] in ["ralenti", "apagado"] and horas >= UMBRAL_PARADA_MIN:
                     numero_paradas += 1
 
-                # DESCANSOS
                 if b["estado"] == "apagado":
                     if horas >= HORAS_DESCANSO_LARGO:
                         horas_descanso += horas
@@ -172,6 +184,9 @@ if files:
             "conductor": conductor,
             "vehiculo": vehiculo,
             "fecha": fecha,
+            "ubicacion_inicio": ubicacion_inicio,
+            "ubicacion_fin": ubicacion_fin,
+            "ubicacion_principal": ubicacion_principal,
             "inicio_jornada": inicio_jornada,
             "fin_jornada": fin_jornada,
             "numero_paradas": numero_paradas,
@@ -186,7 +201,6 @@ if files:
     kpis = pd.DataFrame(kpis_list).round(2)
     kpis = kpis.sort_values(by=["conductor", "fecha"])
 
-    # ✅ FORMATO HORA
     kpis["inicio_jornada"] = pd.to_datetime(kpis["inicio_jornada"]).dt.strftime("%I:%M %p").str.lstrip("0")
     kpis["fin_jornada"] = pd.to_datetime(kpis["fin_jornada"]).dt.strftime("%I:%M %p").str.lstrip("0")
 
@@ -197,46 +211,19 @@ if files:
     # EXPORTAR EXCEL
     # ==============================
 
-    def limpiar_nombre(nombre):
-        if pd.isna(nombre):
-            return "SinNombre"
-        return re.sub(r'[\\/*?:\\[\\]]', "", str(nombre))[:31]
-
     buffer = io.BytesIO()
 
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
 
         for conductor, df_conductor in kpis.groupby("conductor"):
 
-            nombre_hoja = limpiar_nombre(conductor)
+            nombre = re.sub(r'[\\/*?:\\[\\]]', "", str(conductor))[:31]
 
-            df_conductor.to_excel(writer, sheet_name=nombre_hoja, index=False)
-
-            ws = writer.sheets[nombre_hoja]
-
-            for i, col in enumerate(df_conductor.columns):
-                try:
-                    max_len = max(
-                        df_conductor[col].astype(str).apply(len).max(),
-                        len(col)
-                    )
-                except:
-                    max_len = len(col)
-
-                ws.column_dimensions[chr(65 + i)].width = max_len + 2
-
-            # HOJA BLOQUES
-            bloques_cond = bloques[
-                bloques["vehiculo"].isin(df_conductor["vehiculo"])
-            ]
-
-            nombre_bloques = limpiar_nombre(f"Bloques {conductor}")
-
-            bloques_cond.to_excel(writer, sheet_name=nombre_bloques, index=False)
+            df_conductor.to_excel(writer, sheet_name=nombre, index=False)
 
     st.download_button(
-        label="📥 Descargar reporte por conductor",
+        label="📥 Descargar reporte",
         data=buffer,
-        file_name="reporte_jornada_conductores.xlsx",
+        file_name="reporte_jornada.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
