@@ -3,15 +3,21 @@ import pandas as pd
 import io
 import re
 
-st.title("🚛 Análisis de Jornada de Conductores")
+st.title("Jornada Laboral Conductores")
 
 # ==============================
-# CONFIGURACIÓN
+# CONFIGURACIÓN (EN MINUTOS)
 # ==============================
 
-HORAS_MAX_JORNADA = st.number_input("Horas máximas jornada", value=8.0)
-HORAS_DESCANSO_LARGO = st.number_input("Horas descanso largo", value=4.0)
-HORAS_MIN_PAUSA = st.number_input("Horas mínima pausa", value=0.5)
+HORAS_MAX_JORNADA = st.number_input("Horas máximas jornada", value=8.0, step=0.1)
+
+HORAS_DESCANSO_LARGO = st.number_input("Horas descanso largo", value=4.0, step=0.1)
+MIN_PAUSA = st.number_input("Pausa mínima (minutos)", value=34, step=1)
+MIN_PARADA = st.number_input("Duración mínima parada (minutos)", value=17, step=1)
+
+# Convertir a horas
+HORAS_MIN_PAUSA = MIN_PAUSA / 60
+UMBRAL_PARADA_MIN = MIN_PARADA / 60
 
 # ==============================
 # SUBIR ARCHIVOS
@@ -35,7 +41,8 @@ if files:
             "Conductor": "conductor"
         })
 
-        df_temp["vehiculo"] = file.name
+        # ✅ SOLO PLACA (6 caracteres)
+        df_temp["vehiculo"] = file.name[:6].upper()
 
         lista_df.append(df_temp)
 
@@ -90,17 +97,6 @@ if files:
     df["delta_horas"] = df["delta_horas"].fillna(0)
 
     # ==============================
-    # EVENTOS
-    # ==============================
-
-    df["estado_anterior"] = df.groupby("vehiculo")["estado"].shift(1)
-
-    df["fin_conduccion"] = (
-        (df["estado"] != "conduciendo") &
-        (df["estado_anterior"] == "conduciendo")
-    )
-
-    # ==============================
     # BLOQUES
     # ==============================
 
@@ -116,7 +112,7 @@ if files:
     bloques = bloques.reset_index()
 
     # ==============================
-    # KPIs COMPLETOS (CON CORTE POR DÍA)
+    # KPIs
     # ==============================
 
     kpis_list = []
@@ -132,29 +128,38 @@ if files:
         horas_ralenti = grupo.loc[grupo["estado"] == "ralenti", "delta_horas"].sum()
         horas_trabajo = horas_conduccion + horas_ralenti
 
-        numero_paradas = grupo["fin_conduccion"].sum()
-
-        # 🔥 CORTE REAL POR DÍA (OPTIMIZADO)
-        bloques_vehiculo = bloques[bloques["vehiculo"] == vehiculo]
-
-        horas_descanso = 0
-        horas_pausa = 0
+        # ==============================
+        # PARADAS + DESCANSOS POR DÍA
+        # ==============================
 
         inicio_dia = pd.Timestamp(fecha)
         fin_dia = inicio_dia + pd.Timedelta(days=1)
 
-        for _, b in bloques_vehiculo.iterrows():
+        bloques_vehiculo = bloques[bloques["vehiculo"] == vehiculo]
 
-            inicio_b = b["inicio"]
-            fin_b = b["fin"]
+        bloques_dia = bloques_vehiculo[
+            (bloques_vehiculo["inicio"] < fin_dia) &
+            (bloques_vehiculo["fin"] > inicio_dia)
+        ]
 
-            inicio_real = max(inicio_b, inicio_dia)
-            fin_real = min(fin_b, fin_dia)
+        numero_paradas = 0
+        horas_descanso = 0
+        horas_pausa = 0
+
+        for _, b in bloques_dia.iterrows():
+
+            inicio_real = max(b["inicio"], inicio_dia)
+            fin_real = min(b["fin"], fin_dia)
 
             if inicio_real < fin_real:
 
                 horas = (fin_real - inicio_real).total_seconds() / 3600
 
+                # PARADAS
+                if b["estado"] in ["ralenti", "apagado"] and horas >= UMBRAL_PARADA_MIN:
+                    numero_paradas += 1
+
+                # DESCANSOS
                 if b["estado"] == "apagado":
                     if horas >= HORAS_DESCANSO_LARGO:
                         horas_descanso += horas
@@ -180,6 +185,10 @@ if files:
 
     kpis = pd.DataFrame(kpis_list).round(2)
     kpis = kpis.sort_values(by=["conductor", "fecha"])
+
+    # ✅ FORMATO HORA
+    kpis["inicio_jornada"] = pd.to_datetime(kpis["inicio_jornada"]).dt.strftime("%I:%M %p").str.lstrip("0")
+    kpis["fin_jornada"] = pd.to_datetime(kpis["fin_jornada"]).dt.strftime("%I:%M %p").str.lstrip("0")
 
     st.subheader("📊 Resumen por conductor")
     st.dataframe(kpis)
@@ -216,27 +225,14 @@ if files:
 
                 ws.column_dimensions[chr(65 + i)].width = max_len + 2
 
-            # BLOQUES
+            # HOJA BLOQUES
             bloques_cond = bloques[
                 bloques["vehiculo"].isin(df_conductor["vehiculo"])
-            ].copy()
+            ]
 
             nombre_bloques = limpiar_nombre(f"Bloques {conductor}")
 
             bloques_cond.to_excel(writer, sheet_name=nombre_bloques, index=False)
-
-            ws2 = writer.sheets[nombre_bloques]
-
-            for i, col in enumerate(bloques_cond.columns):
-                try:
-                    max_len = max(
-                        bloques_cond[col].astype(str).apply(len).max(),
-                        len(col)
-                    )
-                except:
-                    max_len = len(col)
-
-                ws2.column_dimensions[chr(65 + i)].width = max_len + 2
 
     st.download_button(
         label="📥 Descargar reporte por conductor",
