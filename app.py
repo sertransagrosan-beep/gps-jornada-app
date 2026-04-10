@@ -19,6 +19,49 @@ HORAS_MIN_PAUSA = MIN_PAUSA / 60
 UMBRAL_PARADA_MIN = MIN_PARADA / 60
 
 # ==============================
+# FUNCIONES UBICACIÓN PRO
+# ==============================
+
+def limpiar_ubicacion(texto):
+    if pd.isna(texto):
+        return ""
+    texto = str(texto).lower().strip()
+    texto = re.sub(r'\s+', ' ', texto)
+    return texto
+
+def calcular_ubic_principal(grupo):
+
+    g = grupo.copy()
+    g["ubic_limpia"] = g["ubicacion"].apply(limpiar_ubicacion)
+
+    def peso_estado(row):
+        if row["estado"] in ["ralenti", "apagado"]:
+            return row["delta_horas"] * 2
+        else:
+            return row["delta_horas"]
+
+    g["peso"] = g.apply(peso_estado, axis=1)
+
+    resumen = g.groupby("ubic_limpia").agg({
+        "delta_horas": "sum",
+        "peso": "sum",
+        "estado": "count"
+    }).rename(columns={"estado": "frecuencia"})
+
+    if len(resumen) == 0:
+        return ""
+
+    resumen["score"] = (
+        resumen["peso"] * 0.7 +
+        resumen["delta_horas"] * 0.2 +
+        resumen["frecuencia"] * 0.1
+    )
+
+    mejor = resumen.sort_values("score", ascending=False).index[0]
+
+    return mejor
+
+# ==============================
 # SUBIR ARCHIVOS
 # ==============================
 
@@ -96,7 +139,7 @@ if files:
     df["delta_horas"] = df["delta_horas"].fillna(0)
 
     # ==============================
-    # BLOQUES (CON UBICACIÓN)
+    # BLOQUES
     # ==============================
 
     df["grupo"] = (df["estado"] != df["estado"].shift()).cumsum()
@@ -145,11 +188,10 @@ if files:
         horas_ralenti = grupo.loc[grupo["estado"] == "ralenti", "delta_horas"].sum()
         horas_trabajo = horas_conduccion + horas_ralenti
 
-        # UBICACIONES KPI
+        # UBICACIONES
         ubic_inicio = grupo.loc[grupo["fecha_hora"] == inicio_jornada, "ubicacion"].iloc[0] if pd.notna(inicio_jornada) else ""
         ubic_fin = grupo.loc[grupo["fecha_hora"] == fin_jornada, "ubicacion"].iloc[0] if pd.notna(fin_jornada) else ""
-        ubic_principal = grupo["ubicacion"].mode()
-        ubic_principal = ubic_principal.iloc[0] if len(ubic_principal) > 0 else ""
+        ubic_principal = calcular_ubic_principal(grupo)
 
         # ==============================
         # PARADAS + DESCANSOS
